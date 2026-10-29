@@ -34,9 +34,17 @@ class KeyboardSwitchEvent:
     timestamp: float
 
 
-# ---------------------------------------------------------------------------
-# Abstract base
-# ---------------------------------------------------------------------------
+class HidrawWriter(Protocol):
+    """Protocol for writing to the mouse hidraw device."""
+
+    def open(self, slot_index: int) -> None:
+        """Open the hidraw device corresponding to the mouse's current slot."""
+
+    def send(self, data: bytes) -> None:
+        """Write HID++ data to the mouse."""
+
+    def close(self) -> None:
+        """Close the hidraw handle."""
 
 
 class KeyboardWatcher(abc.ABC):
@@ -49,26 +57,16 @@ class KeyboardWatcher(abc.ABC):
     KEYBOARD_MAC: str = ""
 
     @abc.abstractmethod
-    def start(self) -> None:
-        """Start watching for keyboard switch events."""
+    async def start(self) -> None:
+        """Start watching for keyboard switch events.
+
+        Blocks the calling coroutine until :meth:`stop` is called.
+        """
 
     @abc.abstractmethod
     def stop(self) -> None:
-        """Stop watching."""
+        """Signal the watcher to stop and release resources."""
 
     @abc.abstractmethod
     def get_host_for_slot(self, slot: int) -> str:
         """Return the OS name for a given host slot index."""
-
-
-class HidrawWriter(Protocol):
-    """Protocol for writing to the mouse hidraw device."""
-
-    def open(self, slot_index: int) -> None:
-        """Open the hidraw device corresponding to the mouse's current slot."""
-
-    def send(self, data: bytes) -> None:
-        """Write HID++ data to the mouse."""
-
-    def close(self) -> None:
-        """Close the hidraw handle."""

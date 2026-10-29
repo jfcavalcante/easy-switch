@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
-import time
 
 from .config import Config
-from .events import KeyboardSwitchEvent, KeyboardWatcher, SwitchDirection
+from .events import KeyboardSwitchEvent, KeyboardWatcher
 from .log import setup_logging
 
 logger = logging.getLogger("kvmsync.daemon")
@@ -18,8 +17,8 @@ class Daemon:
     """Run a kvmsync daemon for the current host machine.
 
     The daemon picks an appropriate watcher based on the platform,
-    connects it to a handler that sends CHANGE_HOST commands, and
-    runs a reconciliation loop in the background.
+    connects it to event handlers, and runs a reconciliation loop
+    in the background.
     """
 
     def __init__(self, config: Config) -> None:
@@ -27,7 +26,11 @@ class Daemon:
         setup_logging(config.daemon.verbose)
 
     async def run(self) -> None:
-        """Run the daemon event loop."""
+        """Run the daemon event loop.
+
+        This creates the platform-appropriate watcher, registers event
+        handlers, starts a reconciliation task, and awaits the watcher.
+        """
         platform = sys.platform
 
         if platform == "linux":
@@ -38,19 +41,26 @@ class Daemon:
             logger.error("Unsupported platform: %s", platform)
             sys.exit(1)
 
-        # Register the event handler.
+        # Register event handlers.
         watcher.on_switch(self._on_keyboard_switch)
 
-        # Register the reconciliation callback.
-        watcher.on_switch(self._reconcile_check)
+        # Start reconciliation task in the background.
+        reconcile_task = asyncio.create_task(self._reconciliation_loop(watcher))
 
-        # Start the watcher (blocks until stopped).
         try:
-            watcher.start()
+            # Watcher.start() blocks until stop() is called.
+            await watcher.start()
+        except asyncio.CancelledError:
+            logger.info("Watcher cancelled.")
         except KeyboardInterrupt:
             logger.info("Interrupted.")
         finally:
             watcher.stop()
+            reconcile_task.cancel()
+            try:
+                await reconcile_task
+            except asyncio.CancelledError:
+                pass
 
     # ------------------------------------------------------------------
     # Factory methods
@@ -58,7 +68,6 @@ class Daemon:
 
     def _make_linux_watcher(self) -> KeyboardWatcher:
         """Create the appropriate watcher for Linux."""
-        # Import happens inside the method so we don't crash on Windows.
         from .events_linux import LinuxKeyboardWatcher
 
         return LinuxKeyboardWatcher(
@@ -66,7 +75,6 @@ class Daemon:
             windows_slot=self.config.hosts.windows_slot,
             debounce_ms=self.config.daemon.debounce_ms,
             verbose=self.config.daemon.verbose,
-            # hidraw can be wired up later if a real HidrawWriter is available.
             hidraw=None,
         )
 
@@ -77,7 +85,6 @@ class Daemon:
         return WindowsKeyboardWatcher(
             linux_slot=self.config.hosts.linux_slot,
             windows_slot=self.config.hosts.windows_slot,
-            # Windows never sends CHANGE_HOST.
             hidraw=None,
         )
 
@@ -88,7 +95,7 @@ class Daemon:
     async def _on_keyboard_switch(self, event: KeyboardSwitchEvent) -> None:
         """Handle a keyboard host-switch event."""
         logger.info(
-            "Keyboard switch event: %s (old_connected=%s)",
+            "Keyboard switch: %s (old_connected=%s)",
             event.direction,
             event.old_connected,
         )
@@ -96,23 +103,37 @@ class Daemon:
         if event.direction == SwitchDirection.WINDOWS_TO_LINUX:
             logger.info(
                 "Keyboard switched to Linux (slot %d). "
-                "Sending CHANGE_HOST to mouse …",
+                "CHANGE_HOST will be sent.",
                 self.config.hosts.linux_slot,
             )
-            # The Linux daemon will handle sending the command.
         elif event.direction == SwitchDirection.LINUX_TO_WINDOWS:
             logger.info(
                 "Keyboard switched to Windows. "
-                "Windows does not send CHANGE_HOST — the Linux machine handles it."
+                "No action needed — the Linux machine always sends the command."
             )
 
-    async def _reconcile_check(self, event: KeyboardSwitchEvent) -> None:
-        """Periodic reconciliation check.
+    async def _reconciliation_loop(self, watcher: KeyboardWatcher) -> None:
+        """Periodically verify that the mouse is on the correct host.
 
-        If the watcher detected a switch, this callback runs as a
-        safety net to verify the mouse ended up on the correct host.
+        Runs every ``reconcile_interval_s`` seconds as a safety net.
+        If the keyboard was on this machine but the mouse is not on the
+        corresponding slot, re-send the CHANGE_HOST command.
         """
-        # The actual reconciliation logic reads the mouse's current
-        # host and compares it to what the switch event implies.
-        # This is a stub that would call the HID++ read function.
+        interval = self.config.daemon.reconcile_interval_s
+        logger.info(
+            "Reconciliation loop started (every %ds).",
+            interval,
+        )
+
+        while True:
+            await asyncio.sleep(interval)
+            await self._check_mouse_slot(watcher)
+
+    async def _check_mouse_slot(self, watcher: KeyboardWatcher) -> None:
+        """Check if the mouse is on the correct host slot."""
+        # Stub: read the mouse current host via HID++ and compare.
+        # When a real HidrawWriter is wired up, this will:
+        # 1. Read the mouse's current host via CHANGE_HOST read command.
+        # 2. Compare it to the expected slot for this machine.
+        # 3. If mismatch, send CHANGE_HOST to correct it.
         pass

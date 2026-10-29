@@ -162,6 +162,7 @@ After=bluetooth.target
 
 [Service]
 Type=simple
+User=jh_cavalcante
 ExecStart=/usr/bin/python3 -m kvmsync
 Restart=on-failure
 RestartSec=5
