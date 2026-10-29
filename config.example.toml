@@ -1,0 +1,30 @@
+# kvmsync configuration example
+# Copy this file to config.toml and adjust for your setup.
+
+[mouse]
+# Logitech VID (always 0x046D)
+vendor_id = 0x046D
+# Mouse product ID — verify with: lsusb | grep Logitech
+# MX Vertical: 0xB020
+product_id = 0xB020
+
+[hosts]
+# BT host slot index for each operating system.
+# Slot indices are 0-based: 0 = BT1, 1 = BT2, 2 = BT3.
+# Find your correct indices with the instructions in README.md.
+linux_slot = 0
+windows_slot = 1
+
+[daemon]
+# Debounce window in milliseconds. After detecting a keyboard
+# reconnection, wait this long before sending the CHANGE_HOST command.
+# Protects against Bluetooth noise causing false triggers.
+debounce_ms = 500
+
+# Reconciliation interval in seconds. The daemon periodically checks
+# whether the mouse is actually on the correct host for the current
+# machine. This catches edge cases where the watcher missed an event.
+reconcile_interval_s = 5
+
+# Print verbose logs (each keypress, every D-Bus signal, etc.)
+verbose = false
