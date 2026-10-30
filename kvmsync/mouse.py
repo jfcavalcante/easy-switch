@@ -8,6 +8,7 @@ Windows.
 from __future__ import annotations
 
 import logging
+import sys
 import time
 
 from .hidpp import (
@@ -38,7 +39,12 @@ def send_change_host(
     probed too, because some hidapi backends report usage_page 0.
     """
     try:
-        import hid
+        if sys.platform == "linux":
+            # The "hid" module is hidapi's libusb backend, which cannot
+            # see Bluetooth devices; "hidraw" uses /dev/hidraw*.
+            import hidraw as hid
+        else:
+            import hid
     except ImportError:
         logger.error("hidapi not installed. Install with: pip install hidapi")
         return False

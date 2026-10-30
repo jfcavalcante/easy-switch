@@ -11,19 +11,30 @@ Fluxo esperado:
 
 ## Estado atual
 
-- Windows: funcionando (testado E2E com fn+1). `kvmsync/events_windows.py`
-  faz polling de `hid.enumerate(0x3554, 0xFA07)`: lista vazia = teclado
-  saiu do Windows (some em ~1s). Debounce: 1s ausente / 0.5s presente.
+Regra central: quem move o mouse é a máquina que o teclado ACABOU DE
+DEIXAR (é a única que ainda está conectada ao mouse). Por isso os dois
+daemons precisam estar rodando.
+
+- Lógica comum: `kvmsync/presence.py` (`PresenceWatcher`) faz polling a
+  cada 0.2s de uma função "teclado presente?", com debounce (1s ausente /
+  0.5s presente). Saiu -> CHANGE_HOST(slot do outro host); chegou ->
+  CHANGE_HOST(slot local).
+- Linux: FUNCIONANDO (fn+2 testado E2E em 2026-10-30, mouse foi pro
+  Windows). `events_linux.py` lê `org.bluez.Device1.Connected` por
+  polling (sinais do dbus-python exigem main loop GLib e quebravam).
+  Serviço systemd `systemd/kvmsync.service`, regra udev
+  `systemd/70-kvmsync-hidraw.rules` instalada.
+- Windows: `events_windows.py` faz polling de
+  `hid.enumerate(0x3554, 0xFA07)` (some em ~1s quando o teclado sai).
   WMI/PnP descartados (propriedade "connected" atrasa vários segundos).
-- Envio do CHANGE_HOST: `kvmsync/mouse.py`, comum às duas plataformas, via
-  hidapi (`hid.device()`, pacote `hidapi`). Resolve o índice da feature
-  0x1814 via IRoot (no MX Vertical é 0x0C). No Windows, por BLE, o HID++
-  do mouse fica na usage page 0xFF43.
-- Linux: detecção via BlueZ D-Bus (`org.bluez.Device1.Connected`), serviço
-  systemd (`systemd/kvmsync.service`). Antes NÃO enviava CHANGE_HOST
-  (`hidraw=None`); agora usa `kvmsync/mouse.py`. Falta testar fn+2 no
-  Linux: instalar `systemd/70-kvmsync-hidraw.rules` em
-  /etc/udev/rules.d/ e reiniciar o serviço.
+  Na última tentativa de fn+1 no Windows o mouse NÃO voltou para o Linux,
+  provavelmente porque o daemon do Windows não estava rodando. Próximo
+  passo: rodar `python -m kvmsync -c config.toml -v`, testar fn+1 e,
+  funcionando, configurar o início automático (ver README, seção Windows).
+- Envio do CHANGE_HOST: `kvmsync/mouse.py`. Resolve o índice da feature
+  0x1814 via IRoot (no MX Vertical é 0x0C). HID++ do mouse por BLE fica
+  na usage page 0xFF43. No Linux usa o módulo `hidraw` do pacote hidapi
+  (o módulo `hid` lá é libusb e não enxerga Bluetooth).
 
 ## Fatos sobre o teclado (lidos do BlueZ no Linux)
 

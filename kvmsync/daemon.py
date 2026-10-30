@@ -8,7 +8,6 @@ import sys
 
 from .config import Config
 from .events import KeyboardSwitchEvent, KeyboardWatcher
-from .events import SwitchDirection
 from .log import setup_logging
 
 logger = logging.getLogger("kvmsync.daemon")
@@ -74,9 +73,7 @@ class Daemon:
         return LinuxKeyboardWatcher(
             linux_slot=self.config.hosts.linux_slot,
             windows_slot=self.config.hosts.windows_slot,
-            debounce_ms=self.config.daemon.debounce_ms,
-            verbose=self.config.daemon.verbose,
-            hidraw=None,
+            arrive_after_s=self.config.daemon.debounce_ms / 1000,
         )
 
     def _make_windows_watcher(self) -> KeyboardWatcher:
@@ -86,7 +83,7 @@ class Daemon:
         return WindowsKeyboardWatcher(
             linux_slot=self.config.hosts.linux_slot,
             windows_slot=self.config.hosts.windows_slot,
-            hidraw=None,
+            arrive_after_s=self.config.daemon.debounce_ms / 1000,
         )
 
     # ------------------------------------------------------------------
@@ -96,30 +93,10 @@ class Daemon:
     async def _on_keyboard_switch(self, event: KeyboardSwitchEvent) -> None:
         """Handle a keyboard host-switch event.
 
-        Both Linux and Windows send CHANGE_HOST when their own keyboard
-        switches. Each machine is responsible for its own mouse.
+        The watcher has already sent CHANGE_HOST to the mouse; this only
+        records the event.
         """
-        if event.direction == SwitchDirection.WINDOWS_TO_LINUX:
-            # Keyboard switched TO Linux.
-            # Linux machine: send CHANGE_HOST(linux_slot) to mouse.
-            # Windows machine: ignore — the Linux keyboard switched,
-            #   not the Windows keyboard. But wait, we're on Windows and
-            #   the keyboard switched TO Linux, meaning it's now on the
-            #   Linux machine. So we should NOT act.
-            logger.info(
-                "Keyboard switched TO Linux (slot %d). "
-                "If we are on Linux, CHANGE_HOST will be sent.",
-                self.config.hosts.linux_slot,
-            )
-        elif event.direction == SwitchDirection.LINUX_TO_WINDOWS:
-            # Keyboard switched TO Windows.
-            # Windows machine: send CHANGE_HOST(windows_slot) to mouse.
-            # Linux machine: ignore — the keyboard left Linux.
-            logger.info(
-                "Keyboard switched TO Windows (slot %d). "
-                "If we are on Windows, CHANGE_HOST will be sent.",
-                self.config.hosts.windows_slot,
-            )
+        logger.debug("Switch event: %s", event.direction.name)
 
     async def _reconciliation_loop(self, watcher: KeyboardWatcher) -> None:
         """Periodically verify that the mouse is on the correct host.

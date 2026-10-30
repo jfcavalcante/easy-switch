@@ -101,7 +101,7 @@ def _build_feature_request(
     feature : int
         Feature code, e.g. 0x1814.
     function : int
-        Function ID — 0x00 for read, 0x10 for write.
+        Function ID - 0x00 for read, 0x10 for write.
     *params : int
         Parameter bytes for the command.
     no_reply : bool
@@ -243,9 +243,9 @@ def send_change_host(
     slot : int
         Target host slot (0, 1, or 2).
     write_fn : callable
-        ``write_fn(data: bytes)`` — writes bytes to the device.
+        ``write_fn(data: bytes)`` - writes bytes to the device.
     read_fn : callable
-        ``read_fn(timeout: float) -> bytes | None`` — reads a reply.
+        ``read_fn(timeout: float) -> bytes | None`` - reads a reply.
     debounce_ms : int
         Wait this many milliseconds after writing before reading,
         to give the device time to process the command.
@@ -270,7 +270,7 @@ def send_change_host(
         # Wait briefly for a reply; timeout = 1 s.
         reply = read_fn(timeout=1.0)
         if reply is None:
-            # No reply — command was likely accepted (no_reply mode).
+            # No reply - command was likely accepted (no_reply mode).
             return SendResult(success=True)
         resp = parse_host_count_response(reply)
         return SendResult(success=resp.current_host == slot)

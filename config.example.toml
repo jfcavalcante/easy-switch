@@ -4,7 +4,7 @@
 [mouse]
 # Logitech VID (always 0x046D)
 vendor_id = 0x046D
-# Mouse product ID — verify with: lsusb | grep Logitech
+# Mouse product ID - verify with: lsusb | grep Logitech
 # MX Vertical: 0xB020
 product_id = 0xB020
 
