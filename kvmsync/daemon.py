@@ -8,6 +8,7 @@ import sys
 
 from .config import Config
 from .events import KeyboardSwitchEvent, KeyboardWatcher
+from .events import SwitchDirection
 from .log import setup_logging
 
 logger = logging.getLogger("kvmsync.daemon")
@@ -93,23 +94,31 @@ class Daemon:
     # ------------------------------------------------------------------
 
     async def _on_keyboard_switch(self, event: KeyboardSwitchEvent) -> None:
-        """Handle a keyboard host-switch event."""
-        logger.info(
-            "Keyboard switch: %s (old_connected=%s)",
-            event.direction,
-            event.old_connected,
-        )
+        """Handle a keyboard host-switch event.
 
+        Both Linux and Windows send CHANGE_HOST when their own keyboard
+        switches. Each machine is responsible for its own mouse.
+        """
         if event.direction == SwitchDirection.WINDOWS_TO_LINUX:
+            # Keyboard switched TO Linux.
+            # Linux machine: send CHANGE_HOST(linux_slot) to mouse.
+            # Windows machine: ignore — the Linux keyboard switched,
+            #   not the Windows keyboard. But wait, we're on Windows and
+            #   the keyboard switched TO Linux, meaning it's now on the
+            #   Linux machine. So we should NOT act.
             logger.info(
-                "Keyboard switched to Linux (slot %d). "
-                "CHANGE_HOST will be sent.",
+                "Keyboard switched TO Linux (slot %d). "
+                "If we are on Linux, CHANGE_HOST will be sent.",
                 self.config.hosts.linux_slot,
             )
         elif event.direction == SwitchDirection.LINUX_TO_WINDOWS:
+            # Keyboard switched TO Windows.
+            # Windows machine: send CHANGE_HOST(windows_slot) to mouse.
+            # Linux machine: ignore — the keyboard left Linux.
             logger.info(
-                "Keyboard switched to Windows. "
-                "No action needed — the Linux machine always sends the command."
+                "Keyboard switched TO Windows (slot %d). "
+                "If we are on Windows, CHANGE_HOST will be sent.",
+                self.config.hosts.windows_slot,
             )
 
     async def _reconciliation_loop(self, watcher: KeyboardWatcher) -> None:
