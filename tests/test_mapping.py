@@ -23,18 +23,15 @@ class TestEventCreation:
     def test_from_windows_to_linux(self):
         event = KeyboardSwitchEvent(
             direction=SwitchDirection.WINDOWS_TO_LINUX,
-            old_connected=False,
             timestamp=1000.0,
         )
         assert event.direction == SwitchDirection.WINDOWS_TO_LINUX
-        assert event.old_connected is False
         assert event.timestamp == 1000.0
 
     def test_frozen_dataclass(self):
         """Events should be immutable."""
         event = KeyboardSwitchEvent(
             direction=SwitchDirection.LINUX_TO_WINDOWS,
-            old_connected=True,
             timestamp=0.0,
         )
         with pytest.raises(Exception):

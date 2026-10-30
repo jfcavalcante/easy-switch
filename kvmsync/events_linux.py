@@ -2,8 +2,19 @@
 
 Listens for ``PropertiesChanged`` signals on
 ``org.bluez.Device1.Connected`` for the Aula75 keyboard.
-When it observes a reconnection (Connected: 0 -> 1) after the
-debounce window, it emits a ``KeyboardSwitchEvent``.
+
+Switch logic
+------------
+When the keyboard switches **to this machine** (reconnects to
+Linux), the daemon sends CHANGE_HOST to the mouse.
+
+When the keyboard switches **away from this machine** (disconnects
+from Linux and does not reconnect within the timeout), the daemon
+also sends CHANGE_HOST — so the mouse follows to the new host.
+
+In both cases the correct target slot is:
+- ``linux_slot`` when the keyboard arrives at Linux
+- ``windows_slot`` when the keyboard leaves Linux
 """
 
 from __future__ import annotations
@@ -23,9 +34,12 @@ from .log import setup_logging
 
 logger = logging.getLogger("kvmsync.events_linux")
 
-
-# D-Bus object path of the Aula75 keyboard (determined during discovery).
+# D-Bus object path of the Aula75 keyboard.
 KEYBOARD_PATH = "/org/bluez/hci0/dev_E3_34_CC_0D_A4_0F"
+
+# Time to wait for reconnection before assuming the keyboard has
+# switched away from this machine.
+RECONNECT_TIMEOUT_S = 3
 
 
 class LinuxKeyboardWatcher(KeyboardWatcher):
@@ -49,6 +63,7 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
         self._last_disconnect_time: float = 0.0
         self._is_connected: bool = True
         self._running: bool = False
+        self._disconnect_timer_task: asyncio.Task | None = None
 
     # ------------------------------------------------------------------
     # Public API
@@ -59,10 +74,7 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
         self._callbacks.append(callback)
 
     async def start(self) -> None:
-        """Start watching BlueZ D-Bus for keyboard events.
-
-        Blocks until :meth:`stop` is called.
-        """
+        """Start watching BlueZ D-Bus for keyboard events."""
         self._running = True
         logger.info("Starting Linux keyboard watcher …")
 
@@ -78,7 +90,6 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
             "org.freedesktop.DBus.Properties",
         )
 
-        # Listen for Connected property changes.
         bus.add_signal_receiver(
             self._on_dbus_signal,
             dbus_interface="org.freedesktop.DBus.Properties",
@@ -86,7 +97,6 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
             path=KEYBOARD_PATH,
         )
 
-        # Read initial state.
         try:
             initial = props_iface.Get("org.bluez.Device1", "Connected")
             self._is_connected = bool(initial)
@@ -101,13 +111,27 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
             self.windows_slot,
         )
 
-        # Event loop — blocks until stop() is called.
         while self._running:
             await asyncio.sleep(0.1)
+
+            # If keyboard is disconnected and no timer is running,
+            # start the reconnect timeout.
+            if not self._is_connected:
+                if (
+                    self._disconnect_timer_task is None
+                    or self._disconnect_timer_task.done()
+                ):
+                    self._disconnect_timer_task = asyncio.create_task(
+                        self._wait_reconnect()
+                    )
+                    if self._disconnect_timer_task.done():
+                        self._disconnect_timer_task = None
 
     def stop(self) -> None:
         """Stop watching."""
         self._running = False
+        if self._disconnect_timer_task:
+            self._disconnect_timer_task.cancel()
         logger.info("Linux keyboard watcher stopped.")
 
     def get_host_for_slot(self, slot: int) -> str:
@@ -133,20 +157,20 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
         now = time.monotonic()
         old_state = self._is_connected
 
-        logger.debug(
-            "Keyboard Connected: %s -> %s",
-            old_state,
-            new_state,
-        )
+        logger.debug("Keyboard Connected: %s -> %s", old_state, new_state)
 
         if old_state and not new_state:
-            # Keyboard disconnected — start debounce timer.
+            # Keyboard disconnected — start timer.
             self._last_disconnect_time = now
             self._is_connected = False
         elif not old_state and new_state:
-            # Keyboard reconnected — check debounce.
-            elapsed_ms = (now - self._last_disconnect_time) * 1000
+            # Keyboard reconnected.
+            # Cancel any pending "switched away" timer.
+            if self._disconnect_timer_task and not self._disconnect_timer_task.done():
+                self._disconnect_timer_task.cancel()
+                self._disconnect_timer_task = None
 
+            elapsed_ms = (now - self._last_disconnect_time) * 1000
             if elapsed_ms < self.debounce_ms:
                 logger.debug(
                     "Debounce not met (%.0f ms < %d ms), ignoring.",
@@ -156,37 +180,51 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
                 self._is_connected = True
                 return
 
-            # Debounce passed — real switch detected.
+            # Debounce passed — keyboard arrived at Linux.
             self._is_connected = True
-            self._on_switch_detected()
+            self._emit(SwitchDirection.WINDOWS_TO_LINUX)
 
-    def _on_switch_detected(self) -> None:
-        """Handle a detected keyboard switch event."""
-        ts = time.monotonic()
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
 
-        if self._is_connected:
-            # Keyboard reconnected to Linux — it switched FROM Windows TO Linux.
-            event = KeyboardSwitchEvent(
-                direction=SwitchDirection.WINDOWS_TO_LINUX,
-                old_connected=False,
-                timestamp=ts,
-            )
+    async def _wait_reconnect(self) -> None:
+        """Wait for reconnection; emit switch if no reconnect within timeout."""
+        await asyncio.sleep(RECONNECT_TIMEOUT_S)
+
+        if not self._is_connected:
             logger.info(
-                "Keyboard switched to Linux (slot %d)",
-                self.linux_slot,
+                "Keyboard did not reconnect within %.0fs — "
+                "assuming switched away from this machine.",
+                RECONNECT_TIMEOUT_S,
             )
+            self._emit(SwitchDirection.LINUX_TO_WINDOWS)
 
-            # Send CHANGE_HOST.
-            self._send_change_host(event)
+    def _emit(self, direction: SwitchDirection) -> None:
+        """Emit a switch event and send CHANGE_HOST to the mouse."""
+        ts = time.monotonic()
+        event = KeyboardSwitchEvent(
+            direction=direction,
+            timestamp=ts,
+        )
 
-            # Invoke callbacks.
-            for cb in self._callbacks:
-                if asyncio.iscoroutinefunction(cb):
-                    asyncio.ensure_future(cb(event))
-                else:
-                    cb(event)
+        target_slot = (
+            self.linux_slot
+            if direction == SwitchDirection.WINDOWS_TO_LINUX
+            else self.windows_slot
+        )
+        host_name = self.get_host_for_slot(target_slot)
 
-    def _send_change_host(self, event: KeyboardSwitchEvent) -> None:
+        logger.info("Keyboard switched to %s (slot %d).", host_name, target_slot)
+        self._send_change_host(target_slot, event)
+
+        for cb in self._callbacks:
+            if asyncio.iscoroutinefunction(cb):
+                asyncio.ensure_future(cb(event))
+            else:
+                cb(event)
+
+    def _send_change_host(self, slot: int, event: KeyboardSwitchEvent) -> None:
         """Send CHANGE_HOST command to the mouse."""
         if self.hidraw is None:
             logger.warning(
@@ -196,10 +234,10 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
             return
 
         try:
-            self.hidraw.open(slot_index=self.linux_slot)
-            cmd = build_change_host_write_request(self.linux_slot)
+            self.hidraw.open(slot_index=slot)
+            cmd = build_change_host_write_request(slot)
             self.hidraw.send(bytes(cmd))
-            logger.info("CHANGE_HOST sent successfully (slot %d).", self.linux_slot)
+            logger.info("CHANGE_HOST sent successfully (slot %d).", slot)
             self.hidraw.close()
         except Exception as exc:
             logger.error("Failed to send CHANGE_HOST: %s", exc)

@@ -23,14 +23,11 @@ class KeyboardSwitchEvent:
     ----------
     direction : SwitchDirection
         Which way the keyboard switched.
-    old_connected : bool
-        Was the keyboard connected to *this* machine before the switch.
     timestamp : float
         Monotonic clock value at detection time.
     """
 
     direction: SwitchDirection
-    old_connected: bool
     timestamp: float
 
 

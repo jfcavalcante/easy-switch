@@ -1,9 +1,8 @@
 """Windows keyboard watcher using SetupAPI.
 
 Listens for HID device removal events via SetupAPI.
-When the Aula75 keyboard is removed, the daemon logs it
-but does NOT send CHANGE_HOST — only the Linux machine
-sends the command.
+When the Aula75 keyboard is removed, the daemon sends CHANGE_HOST
+to the mouse so it follows to the new host.
 
 Note: This module requires pywin32 and only works on Windows.
 """
@@ -13,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
 
 from .events import (
     HidrawWriter,
@@ -21,6 +19,7 @@ from .events import (
     KeyboardWatcher,
     SwitchDirection,
 )
+from .hidpp import build_change_host_write_request
 from .log import setup_logging
 
 logger = logging.getLogger("kvmsync.events_windows")
@@ -43,10 +42,6 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         self._callbacks: list = []
         self._running = False
 
-        # Keyboard identifiers.
-        self.KEYBOARD_VENDOR_ID = 0x3554
-        self.KEYBOARD_PRODUCT_ID_BT = 0xFA07
-
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -56,12 +51,7 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         self._callbacks.append(callback)
 
     async def start(self) -> None:
-        """Start watching for HID device events.
-
-        On Windows, this attempts to register for device notification
-        via SetupAPI. If pywin32 is not available, logs a warning
-        and returns immediately (non-blocking).
-        """
+        """Start watching for HID device events."""
         self._running = True
         logger.info("Starting Windows keyboard watcher …")
 
@@ -81,25 +71,20 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         except ImportError:
             logger.warning(
                 "setupapi module not found. "
-                "Using DeviceWatcher polling as fallback."
+                "Using polling fallback."
             )
             await self._polling_start()
             return
 
-        # Set up a window handle for device notifications.
+        # Window handle for device notifications.
         hwnd = win32gui.CreateWindow(
             win32con.STATIC_CLASS,
             "kvmsync",
-            0,
-            0,
-            0,
+            0, 0, 0,
             win32con.CW_USEDEFAULT,
             win32con.CW_USEDEFAULT,
-            0,
-            0,
-            0,
-            None,
-            None,
+            0, 0, 0,
+            None, None,
         )
 
         notification_filter = {
@@ -120,7 +105,7 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
                 win32con.DEVICE_NOTIFY_WINDOW_HANDLE,
             )
         except Exception as exc:
-            logger.error("Failed to register for device notifications: %s", exc)
+            logger.error("Failed to register device notification: %s", exc)
             return
 
         logger.info("Watching for HID device events via SetupAPI …")
@@ -129,7 +114,7 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         while self._running:
             import win32event
             win32event.MsgWaitForMultipleObjects(
-                [], 0, 100,  # 100ms timeout
+                [], 0, 100,
                 win32con.QS_ALLINPUT,
             )
             while win32gui.PeekMessage(hwnd, 0, 0, win32con.PM_REMOVE):
@@ -139,7 +124,7 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         win32gui.DestroyWindow(hwnd)
 
     async def _polling_start(self) -> None:
-        """Fallback: use periodic polling if SetupAPI is unavailable."""
+        """Fallback polling if SetupAPI is unavailable."""
         logger.info("Using polling fallback — check every 2 seconds.")
         while self._running:
             await asyncio.sleep(2)
