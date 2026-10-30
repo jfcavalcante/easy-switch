@@ -11,6 +11,10 @@ Fluxo esperado:
 
 ## Estado atual
 
+FUNCIONANDO nos dois sentidos: ciclo completo fn+1 / fn+2 testado E2E em
+2026-10-30, com os dois daemons rodando como serviço (systemd no Linux,
+tarefa do Agendador no Windows).
+
 Regra central: quem move o mouse é a máquina que o teclado ACABOU DE
 DEIXAR (é a única que ainda está conectada ao mouse). Por isso os dois
 daemons precisam estar rodando.
