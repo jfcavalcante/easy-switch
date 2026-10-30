@@ -1,0 +1,4 @@
+# Allow the kvmsync service user to write HID++ to the Logitech MX Vertical
+# (USB/receiver and Bluetooth). Install to /etc/udev/rules.d/ and run:
+#   sudo udevadm control --reload && sudo udevadm trigger
+KERNEL=="hidraw*", KERNELS=="*:046D:B020.*", MODE="0666"

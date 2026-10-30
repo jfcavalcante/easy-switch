@@ -11,16 +11,19 @@ Fluxo esperado:
 
 ## Estado atual
 
-- Linux: funcionando. `kvmsync/events_linux.py` escuta o BlueZ via D-Bus
-  (`org.bluez.Device1.Connected`), roda como serviço systemd
-  (`systemd/kvmsync.service`).
-- Windows: QUEBRADO. `kvmsync/events_windows.py` não detecta a troca.
-  - A versão com SetupAPI (`DBT_DEVICEREMOVECOMPLETE`) nunca dispara para
-    desconexão Bluetooth.
-  - A versão atual com WMI está errada: procura VID/PID no `Caption`
-    (fica no `DeviceID`) e lê `ConnectionState`, que não existe em
-    `Win32_PnPEntity`. Resultado: "Aula75 keyboard not found in WMI"
-    mesmo com o teclado conectado.
+- Windows: funcionando (testado E2E com fn+1). `kvmsync/events_windows.py`
+  faz polling de `hid.enumerate(0x3554, 0xFA07)`: lista vazia = teclado
+  saiu do Windows (some em ~1s). Debounce: 1s ausente / 0.5s presente.
+  WMI/PnP descartados (propriedade "connected" atrasa vários segundos).
+- Envio do CHANGE_HOST: `kvmsync/mouse.py`, comum às duas plataformas, via
+  hidapi (`hid.device()`, pacote `hidapi`). Resolve o índice da feature
+  0x1814 via IRoot (no MX Vertical é 0x0C). No Windows, por BLE, o HID++
+  do mouse fica na usage page 0xFF43.
+- Linux: detecção via BlueZ D-Bus (`org.bluez.Device1.Connected`), serviço
+  systemd (`systemd/kvmsync.service`). Antes NÃO enviava CHANGE_HOST
+  (`hidraw=None`); agora usa `kvmsync/mouse.py`. Falta testar fn+2 no
+  Linux: instalar `systemd/70-kvmsync-hidraw.rules` em
+  /etc/udev/rules.d/ e reiniciar o serviço.
 
 ## Fatos sobre o teclado (lidos do BlueZ no Linux)
 
@@ -31,34 +34,10 @@ Fluxo esperado:
 - Teclados multi-host costumam usar MAC diferente por canal, então no
   Windows o MAC provavelmente é outro.
 
-## Próximo passo (fazer no Windows)
+## Fatos sobre o teclado no Windows
 
-Descobrir qual sinal muda de verdade quando o teclado troca de host,
-antes de reescrever a detecção. Rodar no PowerShell, apertar fn+1,
-esperar 5s, fn+2, esperar 5s, e analisar a saída:
-
-```powershell
-$prev = ""
-while ($true) {
-  $snap = Get-PnpDevice | Where-Object {
-    $_.InstanceId -match '3554|E334CC0DA40F' -or $_.FriendlyName -like '*AULA*'
-  } | ForEach-Object {
-    $c = (Get-PnpDeviceProperty -InstanceId $_.InstanceId -KeyName '{83DA6326-97A6-4088-9453-A1923F573B29} 15' -ErrorAction SilentlyContinue).Data
-    "{0,-8} present={1,-5} connected={2,-5} {3} | {4}" -f $_.Status, $_.Present, $c, $_.FriendlyName, $_.InstanceId
-  } | Out-String
-  if ($snap -ne $prev) { "==== $(Get-Date -Format HH:mm:ss) ===="; $snap; $prev = $snap }
-  Start-Sleep 1
-}
-```
-
-Também vale checar se o teclado some do `hid.enumerate(0x3554, 0xFA07)`
-quando desconectado. Se sim, dá para detectar só com hidapi (dependência
-que o projeto já tem) e remover o uso de `wmi`.
-
-Depois de escolher o sinal: reescrever `events_windows.py` com ele,
-testar E2E (fn+1 / fn+2 com o mouse trocando de fato) e conferir também
-que o envio do CHANGE_HOST pelo hidapi acha a interface HID++ certa do
-mouse (usage page 0xFF00 vendor, não 0x01).
+- MAC BLE no Windows: `FE3AA882861E` (diferente do Linux)
+- 6 coleções HID com VID 0x3554 / PID 0xFA07 quando conectado
 
 ## Convenções
 

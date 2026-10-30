@@ -178,14 +178,28 @@ def _parse_hosts_info(data: bytes) -> list[HostInfo]:
 # ---------------------------------------------------------------------------
 
 
-def build_change_host_write_request(slot: int) -> bytearray:
+def build_get_feature_index_request(feature: int) -> bytearray:
+    """Build an IRoot.GetFeature request (feature index 0x00, fn 0x00).
+
+    The reply carries the device-specific index of *feature* in byte 4
+    (0 means the feature is not supported).
+    """
+    return _build_feature_request(0x00, FN_READ, feature >> 8, feature & 0xFF)
+
+
+def build_change_host_write_request(
+    slot: int, feature_index: int = CHANGE_HOST
+) -> bytearray:
     """Build a CHANGE_HOST command to switch to *slot* (0, 1, or 2).
+
+    *feature_index* should be the index returned by IRoot.GetFeature
+    for 0x1814; it varies per device (0x0C on the MX Vertical).
 
     This is a fire-and-forget command (no_reply=True).
     """
     if slot not in (0, 1, 2):
         raise ValueError(f"Host slot must be 0-2, got {slot}")
-    return _build_feature_request(CHANGE_HOST, FN_WRITE, slot)
+    return _build_feature_request(feature_index, FN_WRITE, slot)
 
 
 def build_change_host_read_request() -> bytearray:

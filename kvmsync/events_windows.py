@@ -1,11 +1,21 @@
-"""Windows keyboard watcher using WMI polling.
+"""Windows keyboard watcher using hidapi polling.
 
-Detects connection state changes of the Aula75 keyboard via
-Win32_PnPEntity.ConnectionState. When the keyboard switches hosts,
-its ConnectionState drops from 1 (Connected) to 3 (Disconnected).
+Detects the Aula75 keyboard leaving / arriving by checking whether its
+HID interfaces are enumerated (``hid.enumerate(0x3554, 0xFA07)``). When
+the keyboard switches to another host, Windows drops all of its HID
+collections within ~1s; they come back when it switches back.
 
-This is preferred over SetupAPI because Bluetooth device host
-switches do not trigger physical removal events.
+WMI / PnP was tried before and is unreliable here: the BTHLE
+"connected" property lags several seconds and SetupAPI never fires
+removal events for a Bluetooth host switch.
+
+Switch logic
+------------
+- Keyboard absent for ``away_after_s`` -> it switched away from
+  Windows, so send CHANGE_HOST(linux_slot) to the mouse.
+- Keyboard present again for ``arrive_after_s`` -> it switched to
+  Windows, send CHANGE_HOST(windows_slot) (usually a no-op, because the
+  Linux daemon already moved the mouse).
 """
 
 from __future__ import annotations
@@ -13,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from typing import Callable
 
 from .events import (
     HidrawWriter,
@@ -20,28 +31,25 @@ from .events import (
     KeyboardWatcher,
     SwitchDirection,
 )
-from .hidpp import build_change_host_write_request
+from .mouse import send_change_host
 
 logger = logging.getLogger("kvmsync.events_windows")
 
-# Aula75 keyboard VID/PID (Bluetooth and 2.4G modes).
-KEYBOARD_VENDOR_ID = "3554"
-KEYBOARD_PRODUCT_IDS = ("FA07", "FA09")
+# Aula75 keyboard VID/PID over Bluetooth LE.
+KEYBOARD_VENDOR_ID = 0x3554
+KEYBOARD_PRODUCT_ID = 0xFA07
 
-# Logitech mouse VID only; we match by first device found.
-MOUSE_VENDOR_ID = 0x046D
+
+def _keyboard_present() -> bool:
+    import hid
+
+    return bool(hid.enumerate(KEYBOARD_VENDOR_ID, KEYBOARD_PRODUCT_ID))
 
 
 class WindowsKeyboardWatcher(KeyboardWatcher):
-    """Monitor Windows WMI for keyboard connection state changes.
+    """Poll hidapi for the keyboard and follow it with the mouse."""
 
-    Polls Win32_PnPEntity every *check_interval_s* seconds looking for
-    the Aula75 keyboard by VID/PID.  The *ConnectionState* property is:
-    1 = Connected, 3 = Disconnected.
-    """
-
-    # KeyboardWatcher abstract API uses KEYBOARD_MAC; we leave it blank
-    # because the Windows watcher identifies the keyboard by USB VID/PID.
+    # The Windows watcher identifies the keyboard by VID/PID, not MAC.
     KEYBOARD_MAC: str = ""
 
     def __init__(
@@ -49,22 +57,30 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         linux_slot: int = 0,
         windows_slot: int = 1,
         hidraw: HidrawWriter | None = None,
-        check_interval_s: float = 1.0,
+        check_interval_s: float = 0.2,
+        away_after_s: float = 1.0,
+        arrive_after_s: float = 0.5,
+        is_present: Callable[[], bool] = _keyboard_present,
     ) -> None:
         self.linux_slot = linux_slot
         self.windows_slot = windows_slot
         self.hidraw = hidraw
         self.check_interval_s = check_interval_s
+        self.away_after_s = away_after_s
+        self.arrive_after_s = arrive_after_s
+        self._is_present = is_present
         self._callbacks: list = []
         self._running = False
-        self._last_connected: bool = True
-        self._last_change_time: float = 0.0
+        self._present: bool = True
+        # Monotonic time when the raw reading first differed from
+        # self._present, or None while they agree.
+        self._pending_since: float | None = None
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def on_switch(self, callback: callable) -> None:
+    def on_switch(self, callback: Callable) -> None:
         """Register a callback for keyboard switch events.
 
         The callback may be sync or async (coroutine).
@@ -72,22 +88,22 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         self._callbacks.append(callback)
 
     async def start(self) -> None:
-        """Start polling WMI for keyboard connection state."""
+        """Start polling hidapi for the keyboard."""
         self._running = True
-        self._last_change_time = 0.0
         logger.info("Starting Windows keyboard watcher …")
-        logger.info(
-            "Polling Win32_PnPEntity every %.1fs …", self.check_interval_s
-        )
 
-        self._last_connected = WindowsKeyboardWatcher._is_keyboard_connected()
-        logger.info(
-            "Initial keyboard state: connected=%s", self._last_connected
-        )
+        self._present = await asyncio.to_thread(self._is_present)
+        self._pending_since = None
+        logger.info("Initial keyboard state: present=%s", self._present)
 
         while self._running:
             await asyncio.sleep(self.check_interval_s)
-            self._check_state()
+            try:
+                current = await asyncio.to_thread(self._is_present)
+            except Exception:
+                logger.exception("hid.enumerate failed")
+                continue
+            self._update(current, time.monotonic())
 
     def stop(self) -> None:
         """Stop watching."""
@@ -103,70 +119,31 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         return f"slot-{slot}"
 
     # ------------------------------------------------------------------
-    # WMI polling
+    # State machine
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _is_keyboard_connected() -> bool:
-        """Check if the Aula75 keyboard is currently connected.
+    def _update(self, current: bool, now: float) -> None:
+        """Feed one presence reading; emit once it has been stable long enough."""
+        if current == self._present:
+            self._pending_since = None
+            return
 
-        Returns True when ConnectionState == 1 (Connected).
-        Returns False when the device is not found or ConnectionState == 3.
-        """
-        try:
-            import wmi
-        except ImportError:
-            logger.error(
-                "pywmi not installed. Cannot poll WMI. "
-                "Install with: pip install wmi"
-            )
-            return True  # assume connected to avoid false triggers
+        if self._pending_since is None:
+            self._pending_since = now
+            logger.debug("Keyboard present=%s (pending)", current)
 
-        try:
-            c = wmi.WMI()
-            devices = c.Win32_PnPEntity()
-        except Exception:
-            logger.exception("Failed to query WMI")
-            return True
+        needed = self.arrive_after_s if current else self.away_after_s
+        if now - self._pending_since < needed:
+            return
 
-        for device in devices:
-            caption = getattr(device, "Caption", "") or ""
-            if KEYBOARD_VENDOR_ID not in caption.upper():
-                continue
-            if not any(
-                pid in caption.upper() for pid in KEYBOARD_PRODUCT_IDS
-            ):
-                continue
-            # ConnectionState: 1=Connected, 3=Disconnected
-            state = getattr(device, "ConnectionState", 3)
-            logger.debug(
-                "Found keyboard device, ConnectionState=%s", state
-            )
-            return state == 1
-
-        logger.debug("Aula75 keyboard not found in WMI")
-        return False
-
-    def _check_state(self) -> None:
-        """Compare current connection state with the last known state and
-        emit a switch event when they differ, with a 3-second debounce.
-        """
-        now = time.monotonic()
-        current = WindowsKeyboardWatcher._is_keyboard_connected()
-        diff = now - self._last_change_time
-
-        if current != self._last_connected and diff > 3.0:
-            if current:
-                # Keyboard reconnected → switched TO this machine.
-                logger.info("Keyboard connected (detected via WMI).")
-                self._emit(SwitchDirection.WINDOWS_TO_LINUX)
-            else:
-                # Keyboard disconnected → switched FROM this machine.
-                logger.info("Keyboard disconnected (detected via WMI).")
-                self._emit(SwitchDirection.LINUX_TO_WINDOWS)
-
-            self._last_connected = current
-            self._last_change_time = now
+        self._present = current
+        self._pending_since = None
+        if current:
+            logger.info("Keyboard arrived at Windows.")
+            self._emit(SwitchDirection.LINUX_TO_WINDOWS)
+        else:
+            logger.info("Keyboard left Windows.")
+            self._emit(SwitchDirection.WINDOWS_TO_LINUX)
 
     # ------------------------------------------------------------------
     # Event emission
@@ -174,10 +151,9 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
 
     def _emit(self, direction: SwitchDirection) -> None:
         """Emit a switch event and send CHANGE_HOST to the mouse."""
-        ts = time.monotonic()
         event = KeyboardSwitchEvent(
             direction=direction,
-            timestamp=ts,
+            timestamp=time.monotonic(),
         )
 
         target_slot = (
@@ -190,7 +166,7 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
         logger.info(
             "Keyboard switched to %s (slot %d).", host_name, target_slot
         )
-        self._send_change_host(target_slot, event)
+        self._send_change_host(target_slot)
 
         for cb in self._callbacks:
             if asyncio.iscoroutinefunction(cb):
@@ -198,29 +174,9 @@ class WindowsKeyboardWatcher(KeyboardWatcher):
             else:
                 cb(event)
 
-    def _send_change_host(self, slot: int, event: KeyboardSwitchEvent) -> None:
-        """Send CHANGE_HOST HID++ command to the Logitech mouse via hidapi."""
+    def _send_change_host(self, slot: int) -> None:
+        """Send CHANGE_HOST HID++ command to the Logitech mouse."""
         try:
-            import hid
-
-            cmd = build_change_host_write_request(slot)
-            found = False
-            for dev in hid.enumerate(MOUSE_VENDOR_ID, 0):
-                usage_page = dev.get("usage_page", 0)
-                if usage_page == 1:  # HID Generic Desktop
-                    path = dev["path"]
-                    h = hid.Device(path=path)
-                    try:
-                        h.write(bytes(cmd))
-                        logger.info(
-                            "CHANGE_HOST sent successfully (slot %d).", slot
-                        )
-                    finally:
-                        h.close()
-                    found = True
-                    break
-
-            if not found:
-                logger.error("Logitech mouse (usage=Keyboard) not found.")
+            send_change_host(slot)
         except Exception:
             logger.exception("Failed to send CHANGE_HOST")

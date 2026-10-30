@@ -29,7 +29,7 @@ from .events import (
     KeyboardWatcher,
     SwitchDirection,
 )
-from .hidpp import build_change_host_write_request
+from .mouse import send_change_host
 from .log import setup_logging
 
 logger = logging.getLogger("kvmsync.events_linux")
@@ -226,22 +226,7 @@ class LinuxKeyboardWatcher(KeyboardWatcher):
 
     def _send_change_host(self, slot: int, event: KeyboardSwitchEvent) -> None:
         """Send CHANGE_HOST command to the mouse."""
-        if self.hidraw is None:
-            logger.warning(
-                "hidraw not available — cannot send CHANGE_HOST. "
-                "Create a udev rule to allow hidraw access."
-            )
-            return
-
         try:
-            self.hidraw.open(slot_index=slot)
-            cmd = build_change_host_write_request(slot)
-            self.hidraw.send(bytes(cmd))
-            logger.info("CHANGE_HOST sent successfully (slot %d).", slot)
-            self.hidraw.close()
-        except Exception as exc:
-            logger.error("Failed to send CHANGE_HOST: %s", exc)
-            try:
-                self.hidraw.close()
-            except Exception:
-                pass
+            send_change_host(slot)
+        except Exception:
+            logger.exception("Failed to send CHANGE_HOST")
