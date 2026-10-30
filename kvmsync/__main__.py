@@ -7,6 +7,7 @@ import sys
 
 from .config import Config, DaemonConfig, HostConfig, MouseConfig, load_config
 from .daemon import Daemon
+from .log import add_file_handler
 
 
 def main() -> None:
@@ -22,6 +23,10 @@ def main() -> None:
         "-v", "--verbose",
         action="store_true",
         help="Print verbose debug logs",
+    )
+    parser.add_argument(
+        "--log-file",
+        help="Also write logs to this file (rotated at 1 MB)",
     )
     parser.add_argument(
         "--list-devices",
@@ -53,6 +58,9 @@ def main() -> None:
                 verbose=True,
             ),
         )
+
+    if args.log_file:
+        add_file_handler(args.log_file)
 
     # Run the daemon.
     daemon = Daemon(config)

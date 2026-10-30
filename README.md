@@ -86,14 +86,13 @@ The mouse must support the **CHANGE_HOST** (feature `0x1814`) HID++ 2.0 command.
    python -m kvmsync -c config.toml -v
    ```
 
-4. Start it automatically at logon, without a console window, by adding a script to the Startup folder (run from the repo directory):
+4. Run it like a systemd service: a Task Scheduler task that starts at logon, without a console window, restarts on failure and logs to `%LOCALAPPDATA%\kvmsync\kvmsync.log`:
 
    ```powershell
-   $py = (Get-Command pythonw).Source
-   Set-Content "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup\kvmsync.cmd" "@start `"`" `"$py`" -m kvmsync -c `"$PWD\config.toml`""
+   powershell -ExecutionPolicy Bypass -File windows\install-task.ps1
    ```
 
-   Remove that `kvmsync.cmd` to disable it.
+   Manage it with `Start-ScheduledTask kvmsync` / `Stop-ScheduledTask kvmsync`, follow the log with `Get-Content $env:LOCALAPPDATA\kvmsync\kvmsync.log -Wait -Tail 50`, and remove it with `install-task.ps1 -Uninstall`.
 
 ## Configuration
 

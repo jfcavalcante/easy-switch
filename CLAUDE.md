@@ -27,10 +27,11 @@ daemons precisam estar rodando.
 - Windows: `events_windows.py` faz polling de
   `hid.enumerate(0x3554, 0xFA07)` (some em ~1s quando o teclado sai).
   WMI/PnP descartados (propriedade "connected" atrasa vários segundos).
-  Na última tentativa de fn+1 no Windows o mouse NÃO voltou para o Linux,
-  provavelmente porque o daemon do Windows não estava rodando. Próximo
-  passo: rodar `python -m kvmsync -c config.toml -v`, testar fn+1 e,
-  funcionando, configurar o início automático (ver README, seção Windows).
+  fn+1 testado E2E em 2026-10-30 (mouse foi pro Linux). Roda como tarefa
+  do Agendador (equivalente ao systemd), instalada por
+  `windows/install-task.ps1`: inicia no logon, pythonw sem janela,
+  restart em falha, log em `%LOCALAPPDATA%\kvmsync\kvmsync.log`
+  (opção `--log-file`).
 - Envio do CHANGE_HOST: `kvmsync/mouse.py`. Resolve o índice da feature
   0x1814 via IRoot (no MX Vertical é 0x0C). HID++ do mouse por BLE fica
   na usage page 0xFF43. No Linux usa o módulo `hidraw` do pacote hidapi
