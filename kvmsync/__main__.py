@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from .config import load_config
+from .config import Config, DaemonConfig, HostConfig, MouseConfig, load_config
 from .daemon import Daemon
 
 
@@ -44,7 +44,15 @@ def main() -> None:
 
     # Apply --verbose flag on top of config.
     if args.verbose:
-        config.daemon.verbose = True
+        config = Config(
+            mouse=config.mouse,
+            hosts=config.hosts,
+            daemon=DaemonConfig(
+                debounce_ms=config.daemon.debounce_ms,
+                reconcile_interval_s=config.daemon.reconcile_interval_s,
+                verbose=True,
+            ),
+        )
 
     # Run the daemon.
     daemon = Daemon(config)

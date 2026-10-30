@@ -8,3 +8,9 @@ build/
 .eggs/
 *.egg
 config.toml
+.pypirc
+dist/
+build/
+*.tar.gz
+*.whl
+.eggs/
